@@ -10,11 +10,7 @@
 * Tabel ini menunjukkan **training accuracy**, **validation accuracy**, **training loss**, dan **validation loss** pada **epoch terakhir** untuk kedua model. ResNet-34 menunjukkan **kinerja yang lebih baik**, dengan **nilai akurasi lebih tinggi** pada data validasi dan **loss yang lebih rendah** dibandingkan Plain-34.
 
 ## **2. Grafik Kurva Training untuk Kedua Model**
-
-### **Plain-34:**
-
-* **Accuracy Curve:**
-  Grafik pada output dari training model di atas menunjukkan perbandingan kurva akurasi dan loss dari kedua model selama pelatihan. ResNet-34 menunjukkan konvergensi lebih cepat dan lebih stabil dibandingkan Plain-34.
+Grafik pada output dari training model di atas menunjukkan perbandingan kurva akurasi dan loss dari kedua model selama pelatihan. ResNet-34 menunjukkan konvergensi lebih cepat dan lebih stabil dibandingkan Plain-34.
 
 ## **3. Analisis Perbandaan Performansi dan Dampak Residual Connection**
 
