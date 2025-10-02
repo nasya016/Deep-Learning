@@ -1,0 +1,818 @@
+# Memuat semua library yang dibutuhkan untuk proses training dan validation model
+import torch
+import torchvision
+import torch.nn as nn
+import torch.nn.functional as func
+import pandas as pd
+import matplotlib.pyplot as plt
+import numpy as np
+import random
+import pandas as pd
+import os
+from sklearn.model_selection import train_test_split
+from torchvision import transforms
+from torch.utils.data import Dataset, TensorDataset, DataLoader
+from PIL import Image
+import torchvision.models as models
+from torchinfo import summary
+
+import os
+import glob
+from google.colab import drive
+
+%pip install torchinfo -qqq
+
+from google.colab import drive
+drive.mount('/content/drive')
+
+import zipfile
+import os
+
+zip_path = '/content/drive/MyDrive/IF25-4041-dataset.zip'
+
+destination_path = '/content/IF25-4041-dataset'
+
+if not os.path.exists(destination_path):
+    os.makedirs(destination_path)
+    print(f"Direktori '{destination_path}' berhasil dibuat.")
+else:
+    print(f"Direktori '{destination_path}' sudah ada.")
+
+# 5. Ekstrak file zip menggunakan pustaka 'zipfile'
+try:
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        zip_ref.extractall(destination_path)
+    print("File berhasil diekstrak.")
+except zipfile.BadZipFile:
+    print("Error: File yang Anda coba ekstrak bukan file zip yang valid.")
+except FileNotFoundError:
+    print("Error: File zip tidak ditemukan. Pastikan path-nya sudah benar.")
+
+import os
+
+# Path folder yang ingin ditampilkan
+folder_path = '/content/IF25-4041-dataset'
+
+# Cek apakah folder ada
+if os.path.exists(folder_path):
+    # Ambil daftar isi folder
+    files = os.listdir(folder_path)
+
+    # Tampilkan isi folder
+    if files:
+        print(f"Isi folder '{folder_path}':\n")
+        for i, file in enumerate(files, start=1):
+            print(f"{i}. {file}")
+    else:
+        print(f"Folder '{folder_path}' kosong.")
+else:
+    print(f"Folder '{folder_path}' tidak ditemukan.")
+
+
+# PlainBlock without residual connection
+class PlainBlock(nn.Module):
+    """
+    Plain Block without residual connection.
+    This is equivalent to a ResNet BasicBlock but without the skip connection.
+    """
+    def __init__(self, in_channels, out_channels, stride=1, downsample=None):
+        super(PlainBlock, self).__init__()
+
+        # First convolutional layer
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3,
+                               stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+
+        # Second convolutional layer
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3,
+                               stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+
+        # Downsample layer for dimension matching (if needed)
+        self.downsample = downsample
+
+    def forward(self, x):
+        identity = x
+
+        # First conv + bn + relu
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = F.relu(out)
+
+        # Second conv + bn
+        out = self.conv2(out)
+        out = self.bn2(out)
+
+        # Apply downsample to identity if needed (for dimension matching)
+        if self.downsample is not None:
+            identity = self.downsample(identity)
+
+        # NO RESIDUAL CONNECTION HERE (this is the key difference from ResNet)
+        out = F.relu(out)
+
+        return out
+
+# Plain34 Network: ResNet-34 architecture without residual connections
+class Plain34(nn.Module):
+    """
+    Plain-34 Network: ResNet-34 architecture without residual connections.
+
+    Architecture:
+    - Initial conv layer (7x7, stride=2)
+    - MaxPool (3x3, stride=2)
+    - 4 stages of Plain blocks:
+      - Stage 1: 3 blocks, 64 channels
+      - Stage 2: 4 blocks, 128 channels, stride=2 for first block
+      - Stage 3: 6 blocks, 256 channels, stride=2 for first block
+      - Stage 4: 3 blocks, 512 channels, stride=2 for first block
+    - Global Average Pool
+    - Fully Connected layer
+    """
+
+    def __init__(self, num_classes=5):
+        super(Plain34, self).__init__()
+
+        self.in_channels = 64
+
+        # Initial convolutional layer
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+
+        # Plain block stages
+        self.stage1 = self._make_stage(64, 64, 3, stride=1)    # 3 blocks, 64 channels
+        self.stage2 = self._make_stage(64, 128, 4, stride=2)   # 4 blocks, 128 channels
+        self.stage3 = self._make_stage(128, 256, 6, stride=2)  # 6 blocks, 256 channels
+        self.stage4 = self._make_stage(256, 512, 3, stride=2)  # 3 blocks, 512 channels
+
+        # Final layers
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(512, num_classes)
+
+        # Initialize weights
+        self._initialize_weights()
+
+    def _make_stage(self, in_channels, out_channels, num_blocks, stride):
+        downsample = None
+        if stride != 1 or in_channels != out_channels:
+            downsample = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1,
+                         stride=stride, bias=False),
+                nn.BatchNorm2d(out_channels),
+            )
+
+        layers = []
+        layers.append(PlainBlock(in_channels, out_channels, stride, downsample))
+        for _ in range(1, num_blocks):
+            layers.append(PlainBlock(out_channels, out_channels))
+
+        return nn.Sequential(*layers)
+
+    def _initialize_weights(self):
+        """Initialize model weights using He initialization."""
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.constant_(m.bias, 0)
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = F.relu(x)
+        x = self.maxpool(x)
+
+        x = self.stage1(x)
+        x = self.stage2(x)
+        x = self.stage3(x)
+        x = self.stage4(x)
+
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
+
+        return x
+
+
+# ResNet Block with residual connection
+class ResNetBlock(nn.Module):
+    """
+    ResNet Block with residual connection.
+    This block will add the input (identity) to the output after the second convolution.
+    """
+    def __init__(self, in_channels, out_channels, stride=1, downsample=None):
+        super(ResNetBlock, self).__init__()
+
+        # First convolutional layer
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3,
+                               stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+
+        # Second convolutional layer
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3,
+                               stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+
+        # Downsample layer for dimension matching (if needed)
+        self.downsample = downsample
+
+    def forward(self, x):
+        identity = x
+
+        # First conv + bn + relu
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = F.relu(out)
+
+        # Second conv + bn
+        out = self.conv2(out)
+        out = self.bn2(out)
+
+        # Apply downsample to identity if needed (for dimension matching)
+        if self.downsample is not None:
+            identity = self.downsample(identity)
+
+        # Residual connection (key difference to PlainBlock)
+        out += identity  # Adding identity (residual connection)
+        out = F.relu(out)  # Apply ReLU again after residual addition
+
+        return out
+
+
+# ResNet34 Network: ResNet-34 architecture with residual connections
+class ResNet34(nn.Module):
+    """
+    ResNet-34 Network: ResNet-34 architecture with residual connections.
+
+    Architecture:
+    - Initial conv layer (7x7, stride=2)
+    - MaxPool (3x3, stride=2)
+    - 4 stages of ResNet blocks:
+      - Stage 1: 3 blocks, 64 channels
+      - Stage 2: 4 blocks, 128 channels, stride=2 for first block
+      - Stage 3: 6 blocks, 256 channels, stride=2 for first block
+      - Stage 4: 3 blocks, 512 channels, stride=2 for first block
+    - Global Average Pool
+    - Fully Connected layer
+    """
+
+    def __init__(self, num_classes=5):
+        super(ResNet34, self).__init__()
+
+        self.in_channels = 64
+
+        # Initial convolutional layer
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2,
+                               padding=3, bias=False)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+
+        # ResNet block stages
+        self.stage1 = self._make_stage(64, 64, 3, stride=1)    # 3 blocks, 64 channels
+        self.stage2 = self._make_stage(64, 128, 4, stride=2)   # 4 blocks, 128 channels
+        self.stage3 = self._make_stage(128, 256, 6, stride=2)  # 6 blocks, 256 channels
+        self.stage4 = self._make_stage(256, 512, 3, stride=2)  # 3 blocks, 512 channels
+
+        # Final layers
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(512, num_classes)
+
+        # Initialize weights
+        self._initialize_weights()
+
+    def _make_stage(self, in_channels, out_channels, num_blocks, stride):
+        downsample = None
+        if stride != 1 or in_channels != out_channels:
+            downsample = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1,
+                         stride=stride, bias=False),
+                nn.BatchNorm2d(out_channels),
+            )
+
+        layers = []
+        layers.append(ResNetBlock(in_channels, out_channels, stride, downsample))
+        for _ in range(1, num_blocks):
+            layers.append(ResNetBlock(out_channels, out_channels))
+
+        return nn.Sequential(*layers)
+
+    def _initialize_weights(self):
+        """Initialize model weights using He initialization."""
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.constant_(m.bias, 0)
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = F.relu(x)
+        x = self.maxpool(x)
+
+        x = self.stage1(x)
+        x = self.stage2(x)
+        x = self.stage3(x)
+        x = self.stage4(x)
+
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
+
+        return x
+
+# -*- coding: utf-8 -*-
+# ============================================================
+# Plain34 (atas) + ResNet34 (bawah) + Loader GDrive + Training
+# Evaluasi: tabel metrik (train_acc/val_acc/train_loss/val_loss),
+#           grafik kurva training, analisis singkat otomatis,
+#           dan print hyperparameter yang dipakai.
+# ============================================================
+
+import os, sys, math, time, random
+from typing import Optional, Callable, Dict, List, Tuple
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader
+from PIL import Image
+import pandas as pd
+import matplotlib.pyplot as plt
+import torchvision
+from torchvision import transforms
+from torchvision.datasets import ImageFolder
+from dataclasses import dataclass
+# --------------------------
+# 0) Util kecil
+# --------------------------
+def set_seed(seed: int = 42):
+    random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = False
+    torch.backends.cudnn.benchmark = True
+
+def top1_acc(logits: torch.Tensor, targets: torch.Tensor) -> float:
+    preds = logits.argmax(dim=1)
+    return (preds == targets).float().mean().item()
+
+# ============================================================
+# 1) DATASET + Google Drive
+# ============================================================
+
+# Colab mount (aman dipanggil berulang)
+if "google.colab" in sys.modules:
+    try:
+        from google.colab import drive  # type: ignore
+        drive.mount("/content/drive", force_remount=False)
+    except Exception as e:
+        print("[WARN] Drive mount:", e)
+
+# Atur path dataset (override via env var kalau mau)
+DATASET_DIR = os.environ.get("DATASET_DIR", "/content/IF25-4041-dataset")
+
+IMAGENET_MEAN = [0.485, 0.456, 0.406]
+IMAGENET_STD  = [0.229, 0.224, 0.225]
+
+def build_transforms(img_size: int = 224):
+    train_tf = transforms.Compose([
+        transforms.RandomResizedCrop(img_size),
+        transforms.RandomHorizontalFlip(),
+        transforms.ToTensor(),
+        transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
+    ])
+    eval_tf = transforms.Compose([
+        transforms.Resize(256),
+        transforms.CenterCrop(img_size),
+        transforms.ToTensor(),
+        transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
+    ])
+    return train_tf, eval_tf
+
+class ImageCSVDataset(Dataset):
+    """CSV minimal: columns -> filename, label (label optional untuk test)."""
+    def __init__(self, csv_file: str, root_dir: str, transform=None, label_map: Optional[Dict[str,int]] = None):
+        assert os.path.isfile(csv_file), f"CSV tidak ditemukan: {csv_file}"
+        df = pd.read_csv(csv_file)
+        cols = {c.lower(): c for c in df.columns}
+        fn_col = cols.get("filename") or cols.get("image") or cols.get("filepath")
+        assert fn_col, "CSV butuh kolom filename/image/filepath"
+
+        self.transform = transform
+        self.labels, self.class_to_idx = None, None
+
+        lb_col = cols.get("label") or cols.get("class") or cols.get("target")
+        if lb_col:
+            # ✅ FIX: Hapus baris di mana labelnya kosong (NaN) SEBELUM diproses
+            df.dropna(subset=[lb_col], inplace=True)
+
+            # Reset index agar tidak ada masalah saat iterasi nanti
+            df.reset_index(drop=True, inplace=True)
+
+            labels = df[lb_col].astype(str).tolist()
+            self.class_to_idx = label_map or {c:i for i,c in enumerate(sorted(set(labels)))}
+            self.labels = [self.class_to_idx[s] for s in labels]
+
+        # --- PERBAIKAN SELESAI ---
+        # (Logika untuk path file tetap sama, tapi sekarang mengikuti df yang sudah bersih)
+
+        self.paths = []
+        for v in df[fn_col].astype(str).tolist():
+            if os.path.isabs(v): self.paths.append(v)
+            else:
+                # coba di root, train/, test/
+                cand = [os.path.join(root_dir, v),
+                        os.path.join(root_dir, "train", v),
+                        os.path.join(root_dir, "test",  v)]
+                for p in cand:
+                    if os.path.isfile(p): self.paths.append(p); break
+                else:
+                    self.paths.append(os.path.join(root_dir, v))
+
+    def __len__(self): return len(self.paths)
+    def __getitem__(self, i: int):
+        x = Image.open(self.paths[i]).convert("RGB")
+        if self.transform: x = self.transform(x)
+        if self.labels is None: return x, -1
+        return x, self.labels[i]
+
+def make_dataloaders(dataset_dir: str,
+                     img_size: int = 224,
+                     batch_size: int = 32,
+                     num_workers: int = 2,
+                     train_ratio: float = 0.9,
+                     seed: int = 42) -> Tuple[DataLoader, DataLoader, Optional[DataLoader], int]:
+    """Auto pilih CSV mode (jika ada train.csv) atau ImageFolder mode (train/cls/*)."""
+    train_tf, eval_tf = build_transforms(img_size)
+    train_csv = os.path.join(dataset_dir, "train.csv")
+    test_csv  = os.path.join(dataset_dir, "test.csv")
+
+    # --- CSV Mode ---
+    if os.path.isfile(train_csv):
+        df = pd.read_csv(train_csv)
+        label_col = None
+        for k in ["label","class","target"]:
+            if k in df.columns: label_col=k; break
+        assert label_col, "train.csv butuh kolom label/class/target"
+        classes = sorted(set(df[label_col].astype(str).tolist()))
+        label_map = {c:i for i,c in enumerate(classes)}
+
+        full_train = ImageCSVDataset(train_csv, dataset_dir, transform=train_tf, label_map=label_map)
+        n = len(full_train); n_tr = int(n*train_ratio)
+        g = torch.Generator().manual_seed(seed)
+        idx_train, idx_val = torch.utils.data.random_split(range(n), [n_tr, n-n_tr], generator=g)
+
+        def subset(ds: Dataset, indices):
+            class _S(Dataset):
+                def __init__(self, base, idxs): self.base, self.idxs = base, list(idxs)
+                def __len__(self): return len(self.idxs)
+                def __getitem__(self, i): return self.base[self.idxs[i]]
+            return _S(ds, indices)
+
+        train_ds = subset(full_train, idx_train.indices if hasattr(idx_train,"indices") else idx_train)
+        val_ds   = subset(ImageCSVDataset(train_csv, dataset_dir, transform=eval_tf, label_map=label_map),
+                          idx_val.indices if hasattr(idx_val,"indices") else idx_val)
+
+        train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,  num_workers=num_workers, pin_memory=True)
+        val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
+        test_loader  = None
+        if os.path.isfile(test_csv):
+            test_ds = ImageCSVDataset(test_csv, dataset_dir, transform=eval_tf, label_map=label_map)
+            test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
+        return train_loader, val_loader, test_loader, len(classes)
+
+    # --- ImageFolder Mode ---
+    train_dir = os.path.join(dataset_dir, "train")
+    assert os.path.isdir(train_dir), f"Folder train tidak ditemukan: {train_dir}. Atau sediakan train.csv"
+    full = ImageFolder(train_dir, transform=train_tf)
+    n = len(full); n_tr = int(n*train_ratio)
+    g = torch.Generator().manual_seed(seed)
+    idx_train, idx_val = torch.utils.data.random_split(range(n), [n_tr, n-n_tr], generator=g)
+
+    def subset_IF(ds: ImageFolder, indices):
+        class _S(Dataset):
+            def __init__(self, base, idxs): self.base, self.idxs = base, list(idxs)
+            def __len__(self): return len(self.idxs)
+            def __getitem__(self, i): return self.base[self.idxs[i]]
+        return _S(ds, indices)
+
+    train_ds = subset_IF(full, idx_train.indices if hasattr(idx_train,"indices") else idx_train)
+    val_ds   = subset_IF(ImageFolder(train_dir, transform=eval_tf), idx_val.indices if hasattr(idx_val,"indices") else idx_val)
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,  num_workers=num_workers, pin_memory=True)
+    val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
+
+    test_loader = None
+    test_dir = os.path.join(dataset_dir, "test")
+    if os.path.isdir(test_dir):
+        test_loader = DataLoader(ImageFolder(test_dir, transform=eval_tf), batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
+    return train_loader, val_loader, test_loader, len(full.classes)
+
+# ============================================================
+# 2) MODEL — PLAIN34 (atas)
+# ============================================================
+class PlainBlock(nn.Module):
+    def __init__(self, in_ch: int, out_ch: int, stride: int = 1, norm_layer: Optional[Callable[[int], nn.Module]] = None):
+        super().__init__()
+        norm_layer = norm_layer or nn.BatchNorm2d
+        self.conv1 = nn.Conv2d(in_ch, out_ch, 3, stride=stride, padding=1, bias=False)
+        self.bn1   = norm_layer(out_ch)
+        self.relu  = nn.ReLU(inplace=True)
+        self.conv2 = nn.Conv2d(out_ch, out_ch, 3, stride=1, padding=1, bias=False)
+        self.bn2   = norm_layer(out_ch)
+    def forward(self, x):
+        out = self.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out = self.relu(out)
+        return out
+
+class Plain34(nn.Module):
+    def __init__(self, num_classes: int = 5, in_channels: int = 3, norm_layer: Optional[Callable[[int], nn.Module]] = None):
+        super().__init__()
+        nl = norm_layer or nn.BatchNorm2d
+        self.relu = nn.ReLU(inplace=True)
+        self.inp  = 64
+        self.conv1 = nn.Conv2d(in_channels, 64, 7, stride=2, padding=3, bias=False)
+        self.bn1   = nl(64)
+        self.pool  = nn.MaxPool2d(3, stride=2, padding=1)
+        self.layer1 = self._make(64,  3, 1, nl)
+        self.layer2 = self._make(128, 4, 2, nl)
+        self.layer3 = self._make(256, 6, 2, nl)
+        self.layer4 = self._make(512, 3, 2, nl)
+        self.avg    = nn.AdaptiveAvgPool2d(1)
+        self.fc     = nn.Linear(512, num_classes)
+        self._init()
+    def _make(self, planes, blocks, stride, nl):
+        layers = [PlainBlock(self.inp, planes, stride=stride, norm_layer=nl)]
+        self.inp = planes
+        for _ in range(1, blocks): layers.append(PlainBlock(self.inp, planes, norm_layer=nl))
+        return nn.Sequential(*layers)
+    def _init(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d): nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+                nn.init.constant_(m.weight, 1.0); nn.init.constant_(m.bias, 0.0)
+        nn.init.kaiming_normal_(self.fc.weight, mode="fan_out", nonlinearity="relu")
+        nn.init.constant_(self.fc.bias, 0.0)
+    def forward(self, x):
+        x = self.relu(self.bn1(self.conv1(x))); x = self.pool(x)
+        x = self.layer1(x); x = self.layer2(x); x = self.layer3(x); x = self.layer4(x)
+        x = self.avg(x); x = torch.flatten(x,1); x = self.fc(x)
+        return x
+
+# ============================================================
+# 3) MODEL — RESNET34 (bawah)
+# ============================================================
+class BasicBlock(nn.Module):
+    expansion = 1
+    def __init__(self, in_ch: int, out_ch: int, stride: int = 1, norm_layer: Optional[Callable[[int], nn.Module]] = None):
+        super().__init__()
+        nl = norm_layer or nn.BatchNorm2d
+        self.conv1 = nn.Conv2d(in_ch, out_ch, 3, stride=stride, padding=1, bias=False)
+        self.bn1   = nl(out_ch)
+        self.relu  = nn.ReLU(inplace=True)
+        self.conv2 = nn.Conv2d(out_ch, out_ch, 3, stride=1, padding=1, bias=False)
+        self.bn2   = nl(out_ch)
+        self.down: Optional[nn.Module] = None
+        if stride != 1 or in_ch != out_ch * self.expansion:
+            self.down = nn.Sequential(
+                nn.Conv2d(in_ch, out_ch*self.expansion, 1, stride=stride, bias=False),
+                nl(out_ch*self.expansion),
+            )
+    def forward(self, x):
+        identity = x
+        out = self.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        if self.down is not None:
+            identity = self.down(identity)
+        out = self.relu(out + identity)
+        return out
+
+class ResNet34(nn.Module):
+    def __init__(self, num_classes: int = 5, in_channels: int = 3, norm_layer: Optional[Callable[[int], nn.Module]] = None, zero_init_residual: bool = True):
+        super().__init__()
+        nl = norm_layer or nn.BatchNorm2d
+        self.relu = nn.ReLU(inplace=True)
+        self.inp  = 64
+        self.conv1 = nn.Conv2d(in_channels, 64, 7, stride=2, padding=3, bias=False)
+        self.bn1   = nl(64)
+        self.pool  = nn.MaxPool2d(3, stride=2, padding=1)
+        self.layer1 = self._make(64,  3, 1, nl)
+        self.layer2 = self._make(128, 4, 2, nl)
+        self.layer3 = self._make(256, 6, 2, nl)
+        self.layer4 = self._make(512, 3, 2, nl)
+        self.avg    = nn.AdaptiveAvgPool2d(1)
+        self.fc     = nn.Linear(512*BasicBlock.expansion, num_classes)
+        self._init(zero_init_residual)
+    def _make(self, planes, blocks, stride, nl):
+        layers = [BasicBlock(self.inp, planes, stride=stride, norm_layer=nl)]
+        self.inp = planes*BasicBlock.expansion
+        for _ in range(1, blocks): layers.append(BasicBlock(self.inp, planes, norm_layer=nl))
+        return nn.Sequential(*layers)
+    def _init(self, zero_init_residual: bool):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d): nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+                nn.init.constant_(m.weight, 1.0); nn.init.constant_(m.bias, 0.0)
+        if zero_init_residual:
+            for m in self.modules():
+                if isinstance(m, BasicBlock):
+                    nn.init.constant_(m.bn2.weight, 0.0)  # awalnya ≈ identity
+    def forward(self, x):
+        x = self.relu(self.bn1(self.conv1(x))); x = self.pool(x)
+        x = self.layer1(x); x = self.layer2(x); x = self.layer3(x); x = self.layer4(x)
+        x = self.avg(x); x = torch.flatten(x,1); x = self.fc(x)
+        return x
+
+# ============================================================
+# 4) TRAINING LOOP + EVALUASI
+# ============================================================
+@dataclass
+class TrainConfig:
+    lr: float = 1e-3
+    weight_decay: float = 1e-4
+    epochs: int = 10
+    batch_size: int = 32
+    img_size: int = 224
+    label_smoothing: float = 0.1
+    scheduler: str = "cosine"  # "step"|"cosine"
+    warmup_epochs: int = 1
+    num_workers: int = 2
+
+def make_optimizer(model, cfg: TrainConfig):
+    opt = torch.optim.AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+    return opt
+
+def make_scheduler(opt, cfg: TrainConfig, steps_per_epoch: int):
+    if cfg.scheduler == "cosine":
+        return torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=cfg.epochs*steps_per_epoch)
+    else:
+        return torch.optim.lr_scheduler.StepLR(opt, step_size=max(1, cfg.epochs//3), gamma=0.1)
+
+@torch.no_grad()
+def evaluate(model, loader, loss_fn, device) -> Tuple[float, float]:
+    model.eval()
+    tot_loss, tot_acc, n = 0.0, 0.0, 0
+    for xb, yb in loader:
+        xb, yb = xb.to(device), yb.to(device)
+        logits = model(xb)
+        loss = loss_fn(logits, yb)
+        bs = xb.size(0)
+        tot_loss += loss.item() * bs
+        tot_acc  += top1_acc(logits, yb) * bs
+        n += bs
+    return tot_loss / max(1,n), tot_acc / max(1,n)
+
+def train_model(model_name: str,
+                model: nn.Module,
+                train_loader: DataLoader,
+                val_loader: DataLoader,
+                cfg: TrainConfig,
+                device: torch.device):
+    model.to(device)
+    loss_fn = nn.CrossEntropyLoss(label_smoothing=cfg.label_smoothing)
+    opt = make_optimizer(model, cfg)
+    sched = make_scheduler(opt, cfg, steps_per_epoch=len(train_loader))
+    hist = []  # list of dict
+    best = {"epoch": -1, "val_acc": -1.0, "state": None}
+
+    global_step = 0
+    for epoch in range(1, cfg.epochs+1):
+        model.train()
+        epoch_loss, epoch_acc, seen = 0.0, 0.0, 0
+        t0 = time.time()
+        for xb, yb in train_loader:
+            xb, yb = xb.to(device), yb.to(device)
+            logits = model(xb)
+            loss = loss_fn(logits, yb)
+            opt.zero_grad(set_to_none=True)
+            loss.backward()
+            opt.step()
+            # logging
+            bs = xb.size(0)
+            epoch_loss += loss.item() * bs
+            epoch_acc  += top1_acc(logits, yb) * bs
+            seen += bs
+            global_step += 1
+            sched.step()
+        tr_loss = epoch_loss / max(1,seen)
+        tr_acc  = epoch_acc / max(1,seen)
+        va_loss, va_acc = evaluate(model, val_loader, loss_fn, device)
+        hist.append({"epoch": epoch, "train_loss": tr_loss, "train_acc": tr_acc,
+                     "val_loss": va_loss, "val_acc": va_acc, "lr": sched.get_last_lr()[0]})
+        if va_acc > best["val_acc"]:
+            best = {"epoch": epoch, "val_acc": va_acc, "state": {k:v.detach().cpu() for k,v in model.state_dict().items()}}
+        dt = time.time() - t0
+        print(f"[{model_name}] epoch {epoch:02d}/{cfg.epochs} "
+              f"train_loss={tr_loss:.4f} train_acc={tr_acc:.4f} "
+              f"val_loss={va_loss:.4f} val_acc={va_acc:.4f} time={dt:.1f}s")
+    # load best val
+    if best["state"] is not None:
+        model.load_state_dict(best["state"])
+    return model, pd.DataFrame(hist)
+
+# ============================================================
+# 5) MAIN: train Plain34 & ResNet34, bandingkan, plot, analisis
+# ============================================================
+def main():
+    set_seed(42)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print("Device:", device)
+
+    # ---- Data
+    cfg = TrainConfig(epochs=10, batch_size=32, img_size=224, lr=3e-4, weight_decay=1e-4,
+                      label_smoothing=0.1, scheduler="cosine", warmup_epochs=1, num_workers=2)
+    train_loader, val_loader, test_loader, num_classes = make_dataloaders(
+        DATASET_DIR, img_size=cfg.img_size, batch_size=cfg.batch_size, num_workers=cfg.num_workers
+    )
+    print(f"Classes: {num_classes} | train_batches: {len(train_loader)} | val_batches: {len(val_loader)}")
+
+    # ---- Model A: Plain34
+    plain = Plain34(num_classes=num_classes)
+    plain, hist_plain = train_model("Plain34", plain, train_loader, val_loader, cfg, device)
+
+    # ---- Model B: ResNet34
+    res34 = ResNet34(num_classes=num_classes)
+    res34, hist_res = train_model("ResNet34", res34, train_loader, val_loader, cfg, device)
+
+    # ---- Tabel perbandingan (epoch terakhir)
+    last_plain = hist_plain.iloc[-1]
+    last_res   = hist_res.iloc[-1]
+    comp = pd.DataFrame({
+        "model":      ["Plain34", "ResNet34"],
+        "train_acc":  [last_plain.train_acc, last_res.train_acc],
+        "val_acc":    [last_plain.val_acc,   last_res.val_acc],
+        "train_loss": [last_plain.train_loss,last_res.train_loss],
+        "val_loss":   [last_plain.val_loss,  last_res.val_loss],
+    })
+    print("\n=== Tabel Perbandingan (epoch terakhir) ===")
+    print(comp.to_string(index=False))
+
+    # ---- Grafik kurva training (acc & loss)
+    def plot_curves(df: pd.DataFrame, title: str):
+        plt.figure(figsize=(6,4))
+        plt.plot(df["epoch"], df["train_acc"], label=f"{title} - train_acc")
+        plt.plot(df["epoch"], df["val_acc"],   label=f"{title} - val_acc")
+        plt.xlabel("Epoch"); plt.ylabel("Accuracy"); plt.title(f"Accuracy Curves — {title}"); plt.legend(); plt.grid(True)
+        plt.show()
+        plt.figure(figsize=(6,4))
+        plt.plot(df["epoch"], df["train_loss"], label=f"{title} - train_loss")
+        plt.plot(df["epoch"], df["val_loss"],   label=f"{title} - val_loss")
+        plt.xlabel("Epoch"); plt.ylabel("Loss"); plt.title(f"Loss Curves — {title}"); plt.legend(); plt.grid(True)
+        plt.show()
+
+    plot_curves(hist_plain, "Plain34")
+    plot_curves(hist_res,   "ResNet34")
+
+    # ---- Analisis singkat (2–3 paragraf) dibuat otomatis dari metrik)
+    delta_val = float(last_res.val_acc - last_plain.val_acc)
+    delta_tr  = float(last_res.train_acc - last_plain.train_acc)
+    analysis = []
+    # paragraf 1: headline performa
+    if delta_val >= 0:
+        direction = "lebih baik"
+    else:
+        direction = "lebih rendah"
+    analysis.append(
+        f"Pada eksperimen ini, ResNet34 mencapai val_acc {last_res.val_acc:.3f}, sedangkan "
+        f"Plain34 mencapai {last_plain.val_acc:.3f}. Artinya kinerja validasi ResNet34 {direction} "
+        f"dibanding Plain34 dengan selisih {delta_val:+.3f} poin akurasi. "
+        f"Perbedaan ini konsisten/kontraskan dengan tren akurasi latih (Δtrain_acc {delta_tr:+.3f})."
+    )
+    # paragraf 2: interpretasi residual
+    analysis.append(
+        "Garis besar penyebabnya adalah **residual connection** yang mempersingkat jalur gradien. "
+        "Skip-connection menolong optimisasi pada jaringan dalam, sehingga konvergensi lebih cepat dan stabil. "
+        "Pada kurva, ResNet34 biasanya turun loss lebih halus dan menjaga jarak train–val yang wajar; "
+        "Plain34 cenderung kehilangan kapasitas representasi efektif akibat degradasi gradien."
+    )
+    # paragraf 3: catatan praktis
+    analysis.append(
+        "Secara praktis, jika val_loss masih cukup tinggi atau kurva divergense, pertimbangkan memperpanjang epoch, "
+        "menambah augmentasi (Mixup/CutMix), atau menaikkan weight decay. Untuk Plain34, teknik seperti label smoothing, "
+        "GroupNorm, atau learning-rate schedule yang lebih konservatif bisa memperkecil selisih."
+    )
+    print("\n=== Analisis singkat ===\n" + "\n\n".join(analysis))
+
+    # ---- Konfigurasi hyperparameter (dicetak rapi)
+    print("\n=== Konfigurasi Hyperparameter ===")
+    print(pd.Series(vars(cfg)))
+
+    # ---- (Opsional) Evaluasi test set kalau tersedia (tanpa label, hanya forward)
+    if test_loader is not None:
+        print("\n[INFO] Melakukan inferensi di test set (jika ada label -1 di CSV, akurasi tidak dihitung).")
+        loss_fn = nn.CrossEntropyLoss(label_smoothing=cfg.label_smoothing)
+        tloss_p, tacc_p = evaluate(plain, test_loader, loss_fn, device)
+        tloss_r, tacc_r = evaluate(res34, test_loader, loss_fn, device)
+        print(f"Test(Plain34): loss={tloss_p:.4f} acc={tacc_p:.4f} | Test(ResNet34): loss={tloss_r:.4f} acc={tacc_r:.4f}")
+
+# Jalankan
+if __name__ == "__main__":
+    main()
