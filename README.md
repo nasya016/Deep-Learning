@@ -14,20 +14,7 @@
 ### **Plain-34:**
 
 * **Accuracy Curve:**
-  ![Plain34\_Accuracy](path_to_accuracy_graph_plain34.png)
-
-* **Loss Curve:**
-  ![Plain34\_Loss](path_to_loss_graph_plain34.png)
-
-### **ResNet-34:**
-
-* **Accuracy Curve:**
-  ![ResNet34\_Accuracy](path_to_accuracy_graph_resnet34.png)
-
-* **Loss Curve:**
-  ![ResNet34\_Loss](path_to_loss_graph_resnet34.png)
-
-> *Grafik di atas menunjukkan perbandingan kurva akurasi dan loss dari kedua model selama pelatihan. ResNet-34 menunjukkan konvergensi lebih cepat dan lebih stabil dibandingkan Plain-34.*
+  Grafik pada output dari training model di atas menunjukkan perbandingan kurva akurasi dan loss dari kedua model selama pelatihan. ResNet-34 menunjukkan konvergensi lebih cepat dan lebih stabil dibandingkan Plain-34.
 
 ## **3. Analisis Perbandaan Performansi dan Dampak Residual Connection**
 
