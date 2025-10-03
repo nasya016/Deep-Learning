@@ -1,10 +1,64 @@
-# -*- coding: utf-8 -*-
-# ============================================================
-# Plain34 (atas) + ResNet34 (bawah) + Loader GDrive + Training
-# Evaluasi: tabel metrik (train_acc/val_acc/train_loss/val_loss),
-#           grafik kurva training, analisis singkat otomatis,
-#           dan print hyperparameter yang dipakai.
-# ============================================================
+import os, sys, math, time, random
+from typing import Optional, Callable, Dict, List, Tuple
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader
+from PIL import Image
+import pandas as pd
+import matplotlib.pyplot as plt
+import torchvision
+from torchvision import transforms
+from torchvision.datasets import ImageFolder
+from dataclasses import dataclass
+
+%pip install torchinfo -qqq
+
+from google.colab import drive
+drive.mount('/content/drive')
+
+import zipfile
+import os
+
+zip_path = '/content/drive/MyDrive/IF25-4041-dataset.zip'
+
+destination_path = '/content/IF25-4041-dataset'
+
+if not os.path.exists(destination_path):
+    os.makedirs(destination_path)
+    print(f"Direktori '{destination_path}' berhasil dibuat.")
+else:
+    print(f"Direktori '{destination_path}' sudah ada.")
+
+# 5. Ekstrak file zip menggunakan pustaka 'zipfile'
+try:
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        zip_ref.extractall(destination_path)
+    print("File berhasil diekstrak.")
+except zipfile.BadZipFile:
+    print("Error: File yang Anda coba ekstrak bukan file zip yang valid.")
+except FileNotFoundError:
+    print("Error: File zip tidak ditemukan. Pastikan path-nya sudah benar.")
+
+
+# Path folder yang ingin ditampilkan
+folder_path = '/content/IF25-4041-dataset'
+
+# Cek apakah folder ada
+if os.path.exists(folder_path):
+    # Ambil daftar isi folder
+    files = os.listdir(folder_path)
+
+    # Tampilkan isi folder
+    if files:
+        print(f"Isi folder '{folder_path}':\n")
+        for i, file in enumerate(files, start=1):
+            print(f"{i}. {file}")
+    else:
+        print(f"Folder '{folder_path}' kosong.")
+else:
+    print(f"Folder '{folder_path}' tidak ditemukan.")
 
 import os, sys, math, time, random
 from typing import Optional, Callable, Dict, List, Tuple
