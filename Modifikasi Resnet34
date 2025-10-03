@@ -60,22 +60,9 @@ if os.path.exists(folder_path):
 else:
     print(f"Folder '{folder_path}' tidak ditemukan.")
 
-import os, sys, math, time, random
-from typing import Optional, Callable, Dict, List, Tuple
-import numpy as np
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
-from PIL import Image
-import pandas as pd
-import matplotlib.pyplot as plt
-import torchvision
-from torchvision import transforms
-from torchvision.datasets import ImageFolder
-from dataclasses import dataclass
+
 # --------------------------
-# 0) Util kecil
+# 0) Utilitas kecil
 # --------------------------
 def set_seed(seed: int = 42):
     random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
